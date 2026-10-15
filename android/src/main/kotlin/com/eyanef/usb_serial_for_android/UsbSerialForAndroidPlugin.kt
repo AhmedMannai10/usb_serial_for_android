@@ -1,5 +1,6 @@
 package com.eyanef.usb_serial_for_android
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -38,7 +39,7 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
             if (intent!!.action.equals(ACTION_USB_ATTACHED)) {
                 Log.d(TAG, "ACTION_USB_ATTACHED")
                 if (_eventSink != null) {
-                    val device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as UsbDevice?
+                    val device = getUsbDeviceExtra(intent)
                     val msg: HashMap<String, Any?> = _serializeDevice(device!!)
                     msg["event"] = ACTION_USB_ATTACHED
                     _eventSink!!.success(msg)
@@ -46,7 +47,7 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
             } else if (intent.action.equals(ACTION_USB_DETACHED)) {
                 Log.d(TAG, "ACTION_USB_DETACHED")
                 if (_eventSink != null) {
-                    val device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE) as UsbDevice?
+                    val device = getUsbDeviceExtra(intent)
                     val msg: HashMap<String, Any?> = _serializeDevice(device!!)
                     msg["event"] = ACTION_USB_DETACHED
                     _eventSink!!.success(msg)
@@ -77,7 +78,10 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
                     _context?.unregisterReceiver(this)
                     synchronized(this) {
                         Log.i(TAG, "BCR2 in sync")
-                        if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        // Also ask UsbManager, in case the grant extra is missing.
+                        if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) ||
+                            _usbManager?.hasPermission(_device) == true
+                        ) {
                             _cb.onSuccess(_device)
                         } else {
                             Log.e(TAG, "Permission denied for device")
@@ -92,11 +96,49 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
 
         val cw = _context
         val usbReceiver = BCR2(device, cb)
-        val permissionIntent = PendingIntent.getBroadcast(cw, 0, Intent(ACTION_USB_PERMISSION), 0)
+        // Android 12+ requires a mutability flag. The system reports the result by adding
+        // extras to this intent, so it must be mutable. Android 14+ only allows a mutable
+        // PendingIntent around an explicit intent, so restrict it to this app's package.
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val intent = Intent(ACTION_USB_PERMISSION).setPackage(cw?.packageName)
+        val permissionIntent = PendingIntent.getBroadcast(cw, 0, intent, flags)
         val filter = IntentFilter(ACTION_USB_PERMISSION)
-        cw?.registerReceiver(usbReceiver, filter)
+        cw?.let { registerReceiverNotExported(it, usbReceiver, filter) }
         _usbManager?.requestPermission(device, permissionIntent)
     }
+
+    /**
+     * Registers [receiver] so that only this app and the system can deliver to it.
+     *
+     * Apps targeting Android 14+ must pass an export flag when registering a receiver for
+     * non-system broadcasts. RECEIVER_NOT_EXPORTED exists since API 33; protected system
+     * broadcasts such as USB_DEVICE_ATTACHED/DETACHED are still delivered.
+     * Below API 33 the flag does not exist and is not required.
+     */
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerReceiverNotExported(
+        context: Context,
+        receiver: BroadcastReceiver,
+        filter: IntentFilter
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+    }
+
+    /**
+     * Reads [UsbManager.EXTRA_DEVICE]. The typed getParcelableExtra is only used from API 34
+     * because it is unreliable on API 33 (b/232589966), as in androidx IntentCompat.
+     */
+    private fun getUsbDeviceExtra(intent: Intent): UsbDevice? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+        }
 
     private fun openDevice(
         device: UsbDevice,
@@ -223,7 +265,7 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
         val filter = IntentFilter()
         filter.addAction(ACTION_USB_ATTACHED)
         filter.addAction(ACTION_USB_DETACHED)
-        context.registerReceiver(_usbReceiver, filter)
+        registerReceiverNotExported(context, _usbReceiver, filter)
     }
 
     fun unregister() {
