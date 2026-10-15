@@ -1,181 +1,221 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:usb_serial_for_android/transaction.dart';
 import 'package:usb_serial_for_android/usb_device.dart';
 import 'package:usb_serial_for_android/usb_event.dart';
 import 'package:usb_serial_for_android/usb_port.dart';
 import 'package:usb_serial_for_android/usb_serial_for_android.dart';
 
-void main() => runApp(MyApp());
+/// A minimal USB serial terminal.
+///
+/// Pair it with example/arduino/serial_echo/serial_echo.ino on any
+/// Arduino-compatible board (Uno, Nano, ESP32, Pico, ...).
+void main() => runApp(const SerialTerminalApp());
 
-class MyApp extends StatefulWidget {
-  @override
-  _MyAppState createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  UsbPort? _port;
-  String _status = "Idle";
-  List<Widget> _ports = [];
-  List<Widget> _serialData = [];
-
-  StreamSubscription<String>? _subscription;
-  Transaction<String>? _transaction;
-  UsbDevice? _device;
-
-  TextEditingController _textController = TextEditingController();
-
-  Future<bool> _connectTo(UsbDevice? device) async {
-    _serialData.clear();
-
-    if (_subscription != null) {
-      _subscription!.cancel();
-      _subscription = null;
-    }
-
-    if (_transaction != null) {
-      _transaction!.dispose();
-      _transaction = null;
-    }
-
-    if (_port != null) {
-      _port!.close();
-      _port = null;
-    }
-
-    if (device == null) {
-      _device = null;
-      setState(() {
-        _status = "Disconnected";
-      });
-      return true;
-    }
-
-    //_port = await device.create();
-    // You can customize your driver and the port number
-    _port = await device.create(UsbSerial.CP21xx, 4);
-    if (await (_port!.open()) != true) {
-      setState(() {
-        _status = "Failed to open port";
-      });
-      return false;
-    }
-    _device = device;
-
-    await _port!.setDTR(true);
-    await _port!.setRTS(true);
-    await _port!.setPortParameters(
-        115200, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
-
-    await _port!.connect();
-
-    _transaction = Transaction.stringTerminated(
-        _port!.inputStream as Stream<Uint8List>, Uint8List.fromList([13, 10]));
-
-    _subscription = _transaction!.stream.listen((String line) {
-      setState(() {
-        _serialData.add(Text(line));
-        if (_serialData.length > 20) {
-          _serialData.removeAt(0);
-        }
-      });
-    });
-
-    setState(() {
-      _status = "Connected";
-    });
-    return true;
-  }
-
-  void _getPorts() async {
-    _ports = [];
-    List<UsbDevice> devices = await UsbSerial.listDevices();
-    if (!devices.contains(_device)) {
-      _connectTo(null);
-    }
-    print(devices);
-
-    devices.forEach((device) {
-      _ports.add(ListTile(
-          leading: Icon(Icons.usb),
-          title: Text(device.productName!),
-          subtitle: Text(device.manufacturerName!),
-          trailing: ElevatedButton(
-            child: Text(_device == device ? "Disconnect" : "Connect"),
-            onPressed: () {
-              _connectTo(_device == device ? null : device).then((res) {
-                _getPorts();
-              });
-            },
-          )));
-    });
-
-    setState(() {
-      print(_ports);
-    });
-  }
-
-  @override
-  void initState() {
-    super.initState();
-
-    UsbSerial.usbEventStream!.listen((UsbEvent event) {
-      _getPorts();
-    });
-
-    _getPorts();
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-    _connectTo(null);
-  }
+class SerialTerminalApp extends StatelessWidget {
+  const SerialTerminalApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-        home: Scaffold(
+      title: 'Serial Terminal',
+      theme: ThemeData(colorSchemeSeed: Colors.blue, useMaterial3: true),
+      home: const TerminalPage(),
+    );
+  }
+}
+
+class TerminalPage extends StatefulWidget {
+  const TerminalPage({super.key});
+
+  @override
+  State<TerminalPage> createState() => _TerminalPageState();
+}
+
+class _TerminalPageState extends State<TerminalPage> {
+  UsbPort? _port;
+  Transaction<String>? _lines;
+  StreamSubscription<String>? _lineSub;
+  StreamSubscription<UsbEvent>? _usbSub;
+  bool _connecting = false;
+  String _status = 'Disconnected';
+  final List<String> _log = [];
+  final TextEditingController _input = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Connect when a board is plugged in, clean up when it is unplugged.
+    _usbSub = UsbSerial.usbEventStream?.listen((UsbEvent event) {
+      if (event.event == UsbEvent.ACTION_USB_ATTACHED) _connect();
+      if (event.event == UsbEvent.ACTION_USB_DETACHED) _disconnect();
+    });
+    _connect();
+  }
+
+  Future<void> _connect() async {
+    if (_port != null || _connecting) return;
+    _connecting = true;
+    try {
+      // 1. Find the board.
+      final List<UsbDevice> devices = await UsbSerial.listDevices();
+      if (devices.isEmpty) {
+        _setStatus('No USB device found');
+        return;
+      }
+      final UsbDevice device = devices.first;
+
+      // 2. Create a port. The driver is detected automatically; if your
+      //    board is not recognised, pass a type such as UsbSerial.CDC.
+      //    Android shows the USB permission dialog here if needed.
+      final UsbPort? port = await device.create();
+      if (port == null) {
+        _setStatus('Unsupported device');
+        return;
+      }
+
+      // 3. Open it with the same settings as Serial.begin(...) on the board.
+      if (!await port.open()) {
+        _setStatus('Could not open the port');
+        return;
+      }
+      await port.setPortParameters(
+        115200,
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
+      );
+
+      // 4. Split the incoming bytes into lines, then start the read loop.
+      //    connect() is what actually starts reading - without it, nothing arrives.
+      _lines = Transaction.stringTerminated(
+        port.inputStream!,
+        Uint8List.fromList([10]), // '\n'
+      );
+      _lineSub = _lines!.stream.listen((String line) => _addLog('← ${line.trim()}'));
+      await port.connect();
+
+      // 5. Raise DTR and RTS. Boards with native USB only send once DTR is on;
+      //    others may reset when these lines change, so give them a moment.
+      await port.setDTR(true);
+      await port.setRTS(true);
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+      _port = port;
+      _setStatus('Connected to ${device.productName ?? device.deviceName}');
+    } on PlatformException catch (e) {
+      _setStatus('Could not connect: ${e.message}');
+    } finally {
+      _connecting = false;
+    }
+  }
+
+  Future<void> _send(String text) async {
+    final UsbPort? port = _port;
+    if (port == null || text.trim().isEmpty) return;
+    // Messages end with '\n' so the board knows where each one stops.
+    await port.write(Uint8List.fromList(utf8.encode('${text.trim()}\n')));
+    _addLog('→ ${text.trim()}');
+    _input.clear();
+  }
+
+  Future<void> _disconnect() async {
+    await _lineSub?.cancel();
+    _lineSub = null;
+    _lines?.dispose();
+    _lines = null;
+    await _port?.close();
+    _port = null;
+    _setStatus('Disconnected');
+  }
+
+  void _addLog(String line) {
+    if (!mounted) return;
+    setState(() {
+      _log.add(line);
+      if (_log.length > 200) _log.removeAt(0);
+    });
+  }
+
+  void _setStatus(String status) {
+    if (!mounted) return;
+    setState(() => _status = status);
+  }
+
+  @override
+  void dispose() {
+    _usbSub?.cancel();
+    _disconnect();
+    _input.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool connected = _port != null;
+    return Scaffold(
       appBar: AppBar(
-        title: const Text('USB Serial Plugin example app'),
+        title: const Text('Serial Terminal'),
+        actions: [
+          TextButton(
+            onPressed: connected ? _disconnect : _connect,
+            child: Text(connected ? 'Disconnect' : 'Connect'),
+          ),
+        ],
       ),
-      body: Center(
-          child: Column(children: <Widget>[
-        Text(
-            _ports.length > 0
-                ? "Available Serial Ports"
-                : "No serial devices available",
-            style: Theme.of(context).textTheme.headline6),
-        ..._ports,
-        Text('Status: $_status\n'),
-        Text('info: ${_port.toString()}\n'),
-        ListTile(
-          title: TextField(
-            controller: _textController,
-            decoration: InputDecoration(
-              border: OutlineInputBorder(),
-              labelText: 'Text To Send',
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            color: connected ? Colors.green.shade50 : Colors.grey.shade200,
+            child: Text(_status),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: _log.length,
+              itemBuilder: (context, i) => Text(
+                _log[i],
+                style: const TextStyle(fontFamily: 'monospace'),
+              ),
             ),
           ),
-          trailing: ElevatedButton(
-            child: Text("Send"),
-            onPressed: _port == null
-                ? null
-                : () async {
-                    if (_port == null) {
-                      return;
-                    }
-                    String data = _textController.text + "\r\n";
-                    await _port!.write(Uint8List.fromList(data.codeUnits));
-                    _textController.text = "";
-                  },
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                OutlinedButton(onPressed: connected ? () => _send('LED ON') : null, child: const Text('LED ON')),
+                const SizedBox(width: 8),
+                OutlinedButton(onPressed: connected ? () => _send('LED OFF') : null, child: const Text('LED OFF')),
+              ],
+            ),
           ),
-        ),
-        Text("Result Data", style: Theme.of(context).textTheme.headline6),
-        ..._serialData,
-      ])),
-    ));
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _input,
+                    enabled: connected,
+                    decoration: const InputDecoration(hintText: 'Type a message'),
+                    onSubmitted: _send,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.send),
+                  onPressed: connected ? () => _send(_input.text) : null,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

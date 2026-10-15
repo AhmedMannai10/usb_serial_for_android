@@ -1,16 +1,22 @@
-# usb_serial_for_android_example
+# usb_serial_for_android example
 
-Demonstrates how to use the usb_serial_for_android plugin.
+A minimal USB serial terminal for Android. It connects to the first USB
+device it finds, shows every line the device sends, and lets you send text
+or the `LED ON` / `LED OFF` commands.
 
-## Getting Started
+## Try it with a board
 
-This project is a starting point for a Flutter application.
+1. Flash [`arduino/serial_echo/serial_echo.ino`](arduino/serial_echo/serial_echo.ino)
+   to any Arduino-compatible board (Uno, Nano, ESP32, Pico, ...). It runs at
+   115200 baud, echoes every line back and switches the built-in LED on
+   `LED ON` / `LED OFF`.
+2. Run the app on an Android phone: `flutter run`.
+3. Plug the board into the phone with a USB OTG adapter and a data cable.
+   Accept the USB permission dialog.
 
-A few resources to get you started if this is your first Flutter project:
+The app connects on start and whenever a board is plugged in; you can also
+use the **Connect** button. `android/app/src/main/res/xml/device_filter.xml`
+lists the USB vendor IDs that make Android offer to open the app when a board
+is plugged in.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+See the [package README](../README.md) for setup and troubleshooting.
