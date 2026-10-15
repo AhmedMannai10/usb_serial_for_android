@@ -20,10 +20,11 @@ class UsbSerialListener(
 
     private var _eventSink: EventChannel.EventSink? = null;
     private val _handler: Handler = Handler(Looper.getMainLooper())
-    private var _serialListener: SerialListener = SerialListener()
+//    private var _serialListener: SerialListener = SerialListener()
     private var _ioManager: SerialInputOutputManager? = null
 
     //        SerialInputOutputManager(_usbSerialPort, _serialListener)
+
     private val _methodChannelName: String =
         "usb_serial_for_android/UsbSerialListener"
 
@@ -59,8 +60,8 @@ class UsbSerialListener(
         return true
     }
 
-    private fun _connect(): Boolean {
-        _ioManager = SerialInputOutputManager(_usbSerialPort, SerialListener())
+    private fun _connect(result: io.flutter.plugin.common.MethodChannel.Result): Boolean {
+        _ioManager = SerialInputOutputManager(_usbSerialPort, SerialListener(result))
         if (_usbSerialPort!!.isOpen) {
             _ioManager!!.start()
             return true
@@ -102,7 +103,7 @@ class UsbSerialListener(
     /**
      * Listener implementation
      */
-    inner class SerialListener : SerialInputOutputManager.Listener {
+    inner class SerialListener(var result: io.flutter.plugin.common.MethodChannel.Result) : SerialInputOutputManager.Listener {
         override fun onNewData(data: ByteArray?) {
             if (data != null && _eventSink != null) {
                 _handler.post(kotlinx.coroutines.Runnable {
@@ -112,8 +113,11 @@ class UsbSerialListener(
         }
 
         override fun onRunError(e: Exception?) {
-            Log.e(TAG, "onRunError")
+            Log.e(TAG, "onRunErrorException",e);
             _disconnect()
+            Log.e(TAG,"Disconnected")
+//            result.error(TAG!!, "onRunError", e )
+
         }
     }
 
@@ -150,7 +154,7 @@ class UsbSerialListener(
                 result.success(null)
             }
             "connect" -> {
-                result.success(_connect())
+                result.success(_connect(result))
             }
             "disconnect" -> {
                 result.success(_disconnect())

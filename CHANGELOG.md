@@ -17,3 +17,7 @@
 ## 0.0.5
 
 - Fix onError exception.
+
+## 0.0.6
+
+- Fix onError exception.
