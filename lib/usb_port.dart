@@ -1,5 +1,3 @@
-import 'dart:ffi';
-
 import 'package:flutter/services.dart';
 import 'package:usb_serial_for_android/equality.dart';
 import 'package:usb_serial_for_android/types.dart';
@@ -85,12 +83,19 @@ class UsbPort extends AsyncDataSinkSource {
 
   /// returns the asynchronous input stream.
   ///
+  /// Nothing arrives on this stream until [connect] has been called, and data
+  /// that arrives while nobody is listening is dropped, so listen first and
+  /// call [connect] last.
+  ///
   /// Example
   ///
   /// ```dart
-  /// UsbPort port = await device.create();
-  /// await port.open();
-  /// port.inputStream.listen( (Uint8List data) { print(data); } );
+  /// UsbPort? port = await device.create();
+  /// await port!.open();
+  /// await port.setPortParameters(
+  ///     115200, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+  /// port.inputStream!.listen((Uint8List data) { print(data); });
+  /// await port.connect(); // starts the read loop
   /// ```
   ///
   /// This will print out the data as it arrives from the uart.
@@ -110,6 +115,14 @@ class UsbPort extends AsyncDataSinkSource {
     return await _channel.invokeMethod("open");
   }
 
+  /// Starts the read loop that delivers incoming data to [inputStream].
+  ///
+  /// Call it after [open] and [setPortParameters], once you are listening to
+  /// [inputStream]. Without it nothing is read from the device, so nothing
+  /// arrives on [inputStream].
+  ///
+  /// returns true if the read loop was started, or false if the port is not
+  /// open.
   Future<bool> connect() async {
     return await _channel.invokeMethod("connect");
   }

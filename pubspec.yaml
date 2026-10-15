@@ -4,7 +4,7 @@ version: 0.0.9
 homepage: https://github.com/Eyanef/usb_serial_for_android
 
 environment:
-  sdk: '>=2.18.1 <3.0.0'
+  sdk: '>=2.18.1 <4.0.0'
   flutter: ">=2.5.0"
 
 dependencies:
