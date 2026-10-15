@@ -144,10 +144,9 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
         device: UsbDevice,
         result: Result,
         allowAcquirePermission: Boolean,
-        _portNum: Int?,
+        portNum: Int?,
         type: String? = null
     ) {
-        var portNum = _portNum
         val cb: AcquirePermissionCallback = object : AcquirePermissionCallback {
             override fun onSuccess(device: UsbDevice) {
                 openDevice(device, result, false, portNum, type)
@@ -158,17 +157,26 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
             }
         }
 
+        // Every path below replies to `result` exactly once and then returns.
+        // A second reply crashes the app with "Reply already submitted".
         try {
-            val connection: UsbDeviceConnection? = _usbManager?.openDevice(device)
-            if (connection == null && allowAcquirePermission) {
-                acquirePermission(device, cb)
+            // Opening the device is only a permission probe: close it right away,
+            // the port gets its own connection below.
+            val probe: UsbDeviceConnection? = _usbManager?.openDevice(device)
+            if (probe == null) {
+                if (allowAcquirePermission) {
+                    acquirePermission(device, cb)
+                } else if (_usbManager?.hasPermission(device) != true) {
+                    result.error(TAG, "Failed to acquire USB permission", null)
+                } else {
+                    result.error(TAG, "Failed to open USB device", null)
+                }
                 return
             }
-
-            var usbSerialDriver: UsbSerialDriver? = null
+            probe.close()
 
             Log.i(TAG, "type =>  $type")
-            usbSerialDriver = when (type) {
+            val usbSerialDriver: UsbSerialDriver? = when (type) {
                 null -> UsbSerialProber.getDefaultProber().probeDevice(device)
                 "ch34x" -> Ch34xSerialDriver(device)
                 "cp21xx" -> Cp21xxSerialDriver(device)
@@ -176,40 +184,47 @@ class UsbSerialForAndroidPlugin : FlutterPlugin, MethodCallHandler, EventChannel
                 "cdc" -> CdcAcmSerialDriver(device)
 
                 else -> {
-                    result.error(TAG, "unknown type", null)
-                    null
+                    result.error(TAG, "unknown type: $type", null)
+                    return
                 }
             }
 
-
             if (usbSerialDriver == null) {
                 result.error(TAG, "connection failed, no driver for device", null)
+                return
             }
 
-            if(portNum == null && (usbSerialDriver?.ports?.size ?: 0) >= 1) {
-                portNum = 0
+            val ports = usbSerialDriver.ports
+            val index = portNum ?: 0
+            if (index !in ports.indices) {
+                result.error(
+                    TAG,
+                    "Invalid portNum $index: the device has ${ports.size} serial port(s)",
+                    null
+                )
+                return
             }
 
-            val usbSerialPort: UsbSerialPort? = usbSerialDriver?.ports?.get(portNum!!)
-            val usbConnection = _usbManager?.openDevice(usbSerialDriver?.device)
+            val usbSerialPort: UsbSerialPort = ports[index]
+            val usbConnection = _usbManager?.openDevice(usbSerialDriver.device)
+            val messenger = _binaryMessenger
 
-
-            if (usbSerialPort != null && usbConnection != null && _binaryMessenger != null) {
+            if (usbConnection != null && messenger != null) {
                 Log.i(TAG, "usbSerialPort $usbSerialPort")
                 Log.i(TAG, "usbConnection $usbConnection")
-                Log.i(TAG, "_binaryMessenger $_binaryMessenger")
+                Log.i(TAG, "_binaryMessenger $messenger")
                 val listener =
                     UsbSerialListener(
                         usbSerialPort,
                         usbConnection,
-                        _binaryMessenger!!,
+                        messenger,
                     )
                 result.success(listener.getMethodChannelName())
                 Log.i(TAG, "success serial construct")
                 return
             }
-            result.error(TAG, "Not an Serial device.", null)
-
+            usbConnection?.close()
+            result.error(TAG, "Failed to open USB device", null)
 
         } catch (e: SecurityException) {
             if (allowAcquirePermission) {
